@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="kk">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>saytzhasauopaonay — AI Site Builder</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="logo">✦ saytzhasauopaonay</div>
+  <div class="headerActions">
+    <span class="tinyStatus">AI Website Builder</span>
+    <button id="publish">🌐 Жариялау</button>
+  </div>
+</header>
+
+<main>
+  <section class="chat panel">
+    <div class="head">
+      <div>
+        <b>AI сайт жасаушы</b>
+        <small>Идеяңды жаз немесе дайын файл жүкте — сайтты бірге жасаймыз.</small>
+      </div>
+    </div>
+
+    <div id="messages" class="messages">
+      <div class="msg ai">
+        <strong>Сәлем! 👋</strong><br>
+        Қандай сайт керек екенін жазыңыз немесе дайын HTML/CSS/JS/ZIP/сурет файлын тіркеңіз.
+        <br><br>
+        <strong>Мысалы:</strong> «Мектепке арналған заманауи көк сайт жаса, жаңалықтар, фотогалерея және байланыс бөлімі болсын.»
+      </div>
+    </div>
+
+    <form id="form">
+      <div id="fileList" class="fileList" aria-live="polite"></div>
+      <div class="composer">
+        <button type="button" id="fileBtn" class="iconBtn" title="Файл қосу">📎</button>
+        <input id="fileInput" type="file" multiple hidden accept=".html,.htm,.css,.js,.mjs,.ts,.jsx,.tsx,.json,.txt,.md,.xml,.svg,.csv,.zip,.png,.jpg,.jpeg,.webp,.gif,.bmp">
+        <textarea id="prompt" placeholder="Сайтыңды сипатта немесе файлдағы сайтты өзгерт..." required></textarea>
+      </div>
+      <button class="generateBtn" type="submit">✨ Сайт жасау</button>
+      <div class="hint">HTML, CSS, JS, ZIP және суреттерді тіркей аласыз.</div>
+    </form>
+  </section>
+
+  <section class="preview panel">
+    <div class="previewHead">
+      <b>Preview</b>
+      <span id="status">Дайын</span>
+    </div>
+    <iframe id="frame" title="Сайт preview"></iframe>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
