@@ -1,310 +1,468 @@
-import express from "express";
-import cors from "cors";
-import dotenv from "dotenv";
-import OpenAI from "openai";
-import fs from "fs/promises";
-import path from "path";
-import crypto from "crypto";
-import multer from "multer";
-import AdmZip from "adm-zip";
-import { fileURLToPath } from "url";
+const express = require("express");
+const cors = require("cors");
+const dotenv = require("dotenv");
+const OpenAI = require("openai");
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
 
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FRONTEND_DIR = path.join(__dirname, "..", "frontend");
-const DATA_DIR = path.join(__dirname, "data");
-const DATA = path.join(DATA_DIR, "sites.json");
+const PORT = process.env.PORT || 10000;
+
+// --------------------------------
+// Негізгі баптаулар
+// --------------------------------
 
 app.use(cors());
-app.use(express.json({ limit: "8mb" }));
-app.use(express.static(FRONTEND_DIR));
 
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    files: 8,
-    fileSize: 8 * 1024 * 1024
+app.use(
+  express.json({
+    limit: "20mb"
+  })
+);
+
+// --------------------------------
+// Файл жолдары
+// --------------------------------
+
+const ROOT = process.cwd();
+
+const INDEX_FILE = path.join(
+  ROOT,
+  "index.html"
+);
+
+const SITES_FILE = path.join(
+  ROOT,
+  "sites.json"
+);
+
+// --------------------------------
+// Статикалық файлдар
+// --------------------------------
+
+app.use(
+  express.static(ROOT)
+);
+
+// --------------------------------
+// OpenAI
+// --------------------------------
+
+let openai = null;
+
+if (process.env.OPENAI_API_KEY) {
+  openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY
+  });
+}
+
+// --------------------------------
+// Sites JSON дайындау
+// --------------------------------
+
+function ensureSitesFile() {
+  if (!fs.existsSync(SITES_FILE)) {
+    fs.writeFileSync(
+      SITES_FILE,
+      "{}",
+      "utf8"
+    );
   }
-});
-
-const client = process.env.OPENAI_API_KEY
-  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  : null;
-
-const TEXT_EXTENSIONS = new Set([
-  ".html", ".htm", ".css", ".js", ".mjs", ".ts", ".jsx", ".tsx",
-  ".json", ".txt", ".md", ".xml", ".svg", ".csv"
-]);
-
-const IMAGE_EXTENSIONS = new Set([
-  ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"
-]);
-
-function getExt(name) {
-  return path.extname(name || "").toLowerCase();
 }
 
-function isTextFile(name) {
-  return TEXT_EXTENSIONS.has(getExt(name));
-}
+function readSites() {
+  ensureSitesFile();
 
-function isImageFile(name) {
-  return IMAGE_EXTENSIONS.has(getExt(name));
-}
-
-function mimeFromName(name) {
-  const ext = getExt(name);
-  const map = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".webp": "image/webp",
-    ".gif": "image/gif",
-    ".bmp": "image/bmp",
-    ".svg": "image/svg+xml"
-  };
-  return map[ext] || "application/octet-stream";
-}
-
-function toDataUrl(buffer, name) {
-  return `data:${mimeFromName(name)};base64,${buffer.toString("base64")}`;
-}
-
-function cleanHtml(html) {
-  return String(html || "")
-    .replace(/^```html\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .trim();
-}
-
-function safeText(buffer, limit = 120000) {
-  return buffer.toString("utf8").slice(0, limit);
-}
-
-function addTextContext(items, label, text) {
-  if (!text.trim()) return;
-  items.push(`\n===== ${label} =====\n${text}`);
-}
-
-async function readSites() {
   try {
-    await fs.mkdir(DATA_DIR, { recursive: true });
-    return JSON.parse(await fs.readFile(DATA, "utf8"));
-  } catch {
+    const data = fs.readFileSync(
+      SITES_FILE,
+      "utf8"
+    );
+
+    return JSON.parse(data || "{}");
+  } catch (error) {
+    console.error(
+      "sites.json оқу қатесі:",
+      error
+    );
+
     return {};
   }
 }
 
-async function writeSites(sites) {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  await fs.writeFile(DATA, JSON.stringify(sites, null, 2), "utf8");
+function saveSites(sites) {
+  fs.writeFileSync(
+    SITES_FILE,
+    JSON.stringify(
+      sites,
+      null,
+      2
+    ),
+    "utf8"
+  );
 }
 
-async function collectUploadedFiles(files) {
-  const textParts = [];
-  const images = [];
-  let assetIndex = 0;
+// --------------------------------
+// AI кодын тазалау
+// --------------------------------
 
-  const processOne = async (file, virtualName = file.originalname) => {
-    const lower = virtualName.toLowerCase();
-    const ext = getExt(virtualName);
+function cleanAIHtml(html) {
+  if (!html) {
+    return "";
+  }
 
-    if (lower.endsWith(".zip")) {
-      const zip = new AdmZip(file.buffer);
-      for (const entry of zip.getEntries()) {
-        if (entry.isDirectory) continue;
-        const entryName = entry.entryName;
-        const entryBuffer = entry.getData();
-        const assetName = `{{ASSET_${assetIndex}}}`;
+  let result = String(html).trim();
 
-        if (isImageFile(entryName)) {
-          images.push({
-            placeholder: assetName,
-            name: `${virtualName}/${entryName}`,
-            dataUrl: toDataUrl(entryBuffer, entryName)
-          });
-          assetIndex += 1;
-        } else if (isTextFile(entryName)) {
-          addTextContext(textParts, `${virtualName}/${entryName}`, safeText(entryBuffer));
-        }
+  result = result.replace(
+    /^```html\s*/i,
+    ""
+  );
+
+  result = result.replace(
+    /^```\s*/i,
+    ""
+  );
+
+  result = result.replace(
+    /\s*```$/i,
+    ""
+  );
+
+  return result.trim();
+}
+
+// --------------------------------
+// Негізгі бет
+// --------------------------------
+
+app.get("/", (req, res) => {
+  if (!fs.existsSync(INDEX_FILE)) {
+    return res.status(500).send(`
+      <h1>index.html табылмады</h1>
+      <p>GitHub репозиторийінің негізгі папкасына index.html файлын салыңыз.</p>
+    `);
+  }
+
+  res.sendFile(INDEX_FILE);
+});
+
+// --------------------------------
+// AI сайт жасау
+// --------------------------------
+
+app.post(
+  "/api/generate",
+  async (req, res) => {
+
+    try {
+
+      const prompt =
+        String(
+          req.body?.prompt || ""
+        ).trim();
+
+      if (!prompt) {
+        return res.status(400).json({
+          error:
+            "Сайт туралы тапсырма жазыңыз."
+        });
       }
-      return;
-    }
 
-    if (isImageFile(virtualName)) {
-      const assetName = `{{ASSET_${assetIndex}}}`;
-      images.push({
-        placeholder: assetName,
-        name: virtualName,
-        dataUrl: toDataUrl(file.buffer, virtualName)
-      });
-      assetIndex += 1;
-      return;
-    }
+      if (!openai) {
+        return res.status(500).json({
+          error:
+            "OPENAI_API_KEY қосылмаған. Render → Environment бөлімінен API Key қосу керек."
+        });
+      }
 
-    if (isTextFile(virtualName) || ext === "") {
-      addTextContext(textParts, virtualName, safeText(file.buffer));
-    } else {
-      addTextContext(textParts, `${virtualName} (unsupported type; filename only)`, "");
-    }
-  };
+      const systemPrompt = `
+Сен — saytzhasauopaonay платформасының AI website builder көмекшісісің.
 
-  for (const file of files || []) {
-    await processOne(file);
-  }
+Пайдаланушының тапсырмасынан толық дайын веб-сайт жаса.
 
-  return { textParts, images };
-}
+Міндетті талаптар:
 
-function injectAssets(html, images) {
-  let output = html;
-  for (const image of images) {
-    output = output.split(image.placeholder).join(image.dataUrl);
-  }
-  return output;
-}
-
-app.post("/api/generate", upload.array("files", 8), async (req, res) => {
-  try {
-    const prompt = String(req.body?.prompt || "").trim();
-    if (!prompt) {
-      return res.status(400).json({ error: "Тапсырма бос." });
-    }
-
-    if (!client) {
-      return res.status(500).json({
-        error: "OPENAI_API_KEY Render-ге әлі қосылмаған."
-      });
-    }
-
-    const uploaded = await collectUploadedFiles(req.files || []);
-
-    const instructions = `
-Сен saytzhasauopaonay платформасының AI website builder көмекшісісің.
-
-ПАЙДАЛАНУШЫ ТАПСЫРМАСЫ:
-${prompt}
-
-ҚОСЫМША ЖҮКТЕЛГЕН ФАЙЛДАР:
-${uploaded.textParts.length ? uploaded.textParts.join("\n") : "Жоқ"}
-
-Сенің міндетің:
-- Пайдаланушы сұраған сайтты толық жаса немесе жүктелген дайын сайтты жаңарт.
-- Егер HTML/CSS/JS файлдары берілсе, оларды біріктіріп, қажет өзгерістерді жаса.
-- Егер суреттер берілсе, оларды сайтқа мағыналы жерлерде қолдан.
-- Жүктелген суретті HTML/CSS ішінде қолдану керек болса, оның дәл placeholder-ін қолдан: {{ASSET_0}}, {{ASSET_1}}, т.б.
-- Placeholder мәтіндерін өзің ойдан өзгертпе.
-- Тек бір толық, өздігінен жұмыс істейтін HTML құжатын қайтар.
-- CSS және JavaScript сол HTML ішінде болсын.
-- Заманауи, әдемі және кәсіби дизайн жаса.
-- Телефонға және компьютерге responsive болсын.
-- Қазақша мәтін дұрыс көрсетілсін.
-- Батырмалар мен интерактивті элементтер жұмыс істесін.
-- Қажет болса жеңіл анимациялар қолдан.
-- Markdown code fence қолданба.
+1. Толық HTML құжатын жаса.
+2. CSS кодын HTML ішіндегі <style> тегіне жаз.
+3. JavaScript кодын HTML ішіндегі <script> тегіне жаз.
+4. Сайт бір HTML файлмен толық жұмыс істеуі керек.
+5. Заманауи және әдемі дизайн жаса.
+6. Компьютерге де, телефонға да responsive болсын.
+7. Қазақша мәтінді дұрыс көрсет.
+8. Батырмалардың әрекеттері жұмыс істесін.
+9. Жеңіл анимациялар қолдан.
+10. Пайдаланушы сұраған бөлімдердің бәрін жаса.
+11. Сурет керек болса, сыртқы HTTPS сурет URL-дерін қолдануға болады.
+12. HTML ішінде дайын placeholder суреттерді қолдануға болады.
+13. Кодты markdown блоктың ішіне салма.
+14. Жауапта тек дайын HTML кодын қайтар.
 `;
 
-    const content = [
-      { type: "input_text", text: instructions }
-    ];
+      const response =
+        await openai.responses.create({
+          model:
+            "gpt-5.6-luna",
 
-    for (const image of uploaded.images.slice(0, 6)) {
-      content.push({
-        type: "input_text",
-        text: `Жүктелген сурет: ${image.name}. Оны HTML-де ${image.placeholder} placeholder-імен қолдан.`
+          input: [
+            {
+              role: "system",
+              content:
+                systemPrompt
+            },
+            {
+              role: "user",
+              content:
+                prompt
+            }
+          ]
+        });
+
+      const html =
+        cleanAIHtml(
+          response.output_text
+        );
+
+      if (!html) {
+        return res.status(500).json({
+          error:
+            "AI бос жауап қайтарды."
+        });
+      }
+
+      res.json({
+        success: true,
+        html
       });
-      content.push({
-        type: "input_image",
-        image_url: image.dataUrl
+
+    } catch (error) {
+
+      console.error(
+        "AI ERROR:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          error?.message ||
+          "AI сайт жасау кезінде қате шықты."
       });
     }
+  }
+);
 
-    const response = await client.responses.create({
-      model: "gpt-5.6-luna",
-      input: [
-        {
-          role: "user",
-          content
-        }
-      ]
-    });
+// --------------------------------
+// Сайт жариялау
+// --------------------------------
 
-    let html = cleanHtml(response.output_text);
-    html = injectAssets(html, uploaded.images);
+app.post(
+  "/api/publish",
+  async (req, res) => {
+
+    try {
+
+      const html =
+        String(
+          req.body?.html || ""
+        ).trim();
+
+      const title =
+        String(
+          req.body?.title ||
+          "saytzhasauopaonay сайты"
+        ).trim();
+
+      if (!html) {
+        return res.status(400).json({
+          error:
+            "Жариялайтын сайт жоқ."
+        });
+      }
+
+      const id =
+        crypto
+          .randomBytes(6)
+          .toString("hex");
+
+      const sites =
+        readSites();
+
+      sites[id] = {
+        id,
+        title,
+        html,
+        createdAt:
+          new Date().toISOString()
+      };
+
+      saveSites(sites);
+
+      const host =
+        `${req.protocol}://${req.get("host")}`;
+
+      res.json({
+        success: true,
+        id,
+        url:
+          `${host}/s/${id}`
+      });
+
+    } catch (error) {
+
+      console.error(
+        "PUBLISH ERROR:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          "Сайтты жариялау кезінде қате шықты."
+      });
+    }
+  }
+);
+
+// --------------------------------
+// Жарияланған сайтты көрсету
+// --------------------------------
+
+app.get(
+  "/s/:id",
+  (req, res) => {
+
+    try {
+
+      const sites =
+        readSites();
+
+      const site =
+        sites[req.params.id];
+
+      if (!site) {
+        return res.status(404).send(`
+          <!DOCTYPE html>
+          <html lang="kk">
+          <head>
+            <meta charset="UTF-8">
+            <title>Сайт табылмады</title>
+          </head>
+          <body>
+            <h1>Сайт табылмады</h1>
+            <p>Бұл сайттың сілтемесі дұрыс емес немесе сайт өшірілген.</p>
+          </body>
+          </html>
+        `);
+      }
+
+      res
+        .type("html")
+        .send(site.html);
+
+    } catch (error) {
+
+      console.error(
+        "SITE ERROR:",
+        error
+      );
+
+      res.status(500).send(
+        "Сайтты ашу кезінде қате шықты."
+      );
+    }
+  }
+);
+
+// --------------------------------
+// Сайт туралы ақпарат
+// --------------------------------
+
+app.get(
+  "/api/sites/:id",
+  (req, res) => {
+
+    const sites =
+      readSites();
+
+    const site =
+      sites[req.params.id];
+
+    if (!site) {
+      return res.status(404).json({
+        error:
+          "Сайт табылмады."
+      });
+    }
 
     res.json({
-      html,
-      attachedFiles: (req.files || []).map(file => file.originalname),
-      imageCount: uploaded.images.length
-    });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({
-      error: "Файлды немесе AI генерациясын өңдеу кезінде қате болды."
+      id: site.id,
+      title: site.title,
+      createdAt:
+        site.createdAt
     });
   }
-});
+);
 
-app.post("/api/publish", async (req, res) => {
-  try {
-    const html = String(req.body?.html || "").trim();
-    const title = String(req.body?.title || "AI сайт")
-      .trim()
-      .slice(0, 100);
+// --------------------------------
+// Health check
+// --------------------------------
 
-    if (!html) {
-      return res.status(400).json({ error: "Жариялайтын сайт жоқ." });
-    }
-
-    const id = crypto.randomBytes(5).toString("hex");
-    const sites = await readSites();
-
-    sites[id] = {
-      id,
-      title,
-      html,
-      createdAt: new Date().toISOString()
-    };
-
-    await writeSites(sites);
-
-    res.json({ id, url: `/s/${id}` });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Жариялау кезінде қате болды." });
+app.get(
+  "/api/health",
+  (req, res) => {
+    res.json({
+      status: "ok",
+      service:
+        "saytzhasauopaonay",
+      time:
+        new Date().toISOString()
+    });
   }
-});
+);
 
-app.get("/api/sites/:id", async (req, res) => {
-  const sites = await readSites();
-  const site = sites[req.params.id];
+// --------------------------------
+// 404
+// --------------------------------
 
-  if (!site) {
-    return res.status(404).json({ error: "Сайт табылмады." });
+app.use(
+  (req, res) => {
+
+    res.status(404).json({
+      error:
+        "Бұл адрес табылмады."
+    });
+
   }
+);
 
-  res.json(site);
-});
+// --------------------------------
+// Серверді іске қосу
+// --------------------------------
 
-app.get("/s/:id", async (req, res) => {
-  const sites = await readSites();
-  const site = sites[req.params.id];
+app.listen(
+  PORT,
+  "0.0.0.0",
+  () => {
 
-  if (!site) {
-    return res.status(404).send("<h1>Сайт табылмады</h1>");
+    console.log(
+      "================================="
+    );
+
+    console.log(
+      "saytzhasauopaonay сервері іске қосылды"
+    );
+
+    console.log(
+      `PORT: ${PORT}`
+    );
+
+    console.log(
+      `ROOT: ${ROOT}`
+    );
+
+    console.log(
+      "================================="
+    );
   }
-
-  res.type("html").send(site.html);
-});
-
-app.get("*", (req, res) => {
-  res.sendFile(path.join(FRONTEND_DIR, "index.html"));
-});
-
-app.listen(PORT, () => {
-  console.log(`saytzhasauopaonay сервері: ${PORT}`);
-});
+);
